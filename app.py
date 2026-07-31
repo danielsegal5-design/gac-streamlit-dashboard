@@ -98,20 +98,39 @@ def callout(text, tone="info"):
     )
 
 
+# The original data uses slightly different casing for the same program across
+# tables (e.g. "Boys team" vs "Boys Team", "Xcel bronze" vs "XCEL Bronze") —
+# a pre-existing inconsistency in the source, not introduced here. Canonicalizing
+# lets the Class Type filter match a program consistently everywhere it appears.
+CANONICAL_PROGRAMS = {
+    "recreation gymnastics": "Recreation Gymnastics",
+    "gymnastics": "Gymnastics",
+    "ninja zone": "Ninja Zone",
+    "level 6-10": "Level 6-10",
+    "xcel g/p/d": "Xcel G/P/D",
+    "boys team": "Boys Team",
+    "camps recreational": "Camps Recreational",
+    "xcel bronze": "Xcel Bronze",
+    "level 3": "Level 3",
+    "fast trak": "Fast Trak",
+    "level 4": "Level 4",
+    "level 5": "Level 5",
+    "clinics": "Clinics",
+    "team camp": "Team Camp",
+}
+
+
+def canon_program(series):
+    return series.apply(lambda v: CANONICAL_PROGRAMS.get(str(v).strip().lower(), v))
+
+
 def plain_table(df):
     st.dataframe(df, hide_index=True, use_container_width=True)
 
 
-def data_table(df, filter_col=None, default_sort_col=None, default_sort_desc=False):
-    filtered = df
-    if filter_col:
-        options = ["All"] + sorted(df[filter_col].unique().tolist())
-        choice = st.selectbox(f"Filter by {filter_col}", options, key=f"filter_{filter_col}_{id(df)}")
-        if choice != "All":
-            filtered = df[df[filter_col] == choice]
-        st.caption(f"{len(filtered)} of {len(df)} rows · click a column header to sort")
-    if default_sort_col:
-        filtered = filtered.sort_values(default_sort_col, ascending=not default_sort_desc)
+def data_table(df, default_sort_col=None, default_sort_desc=False):
+    filtered = df.sort_values(default_sort_col, ascending=not default_sort_desc) if default_sort_col else df
+    st.caption(f"{len(filtered)} row(s) · click a column header to sort")
     st.dataframe(filtered, hide_index=True, use_container_width=True)
 
 
@@ -160,6 +179,7 @@ utilization_by_program = pd.DataFrame(
     ],
     columns=["Category", "Enrollment", "Capacity", "Waitlist", "Utilization"],
 )
+utilization_by_program["Category"] = canon_program(utilization_by_program["Category"])
 
 underfilled = pd.DataFrame(
     [
@@ -185,6 +205,7 @@ underfilled = pd.DataFrame(
     ],
     columns=["Day", "Time", "Class", "Program", "Filled", "Max", "Open"],
 )
+underfilled["Program"] = canon_program(underfilled["Program"])
 
 financials = pd.DataFrame(
     [
@@ -228,6 +249,7 @@ enrollment_by_program = pd.DataFrame(
     ],
     columns=["Program", "Mar-26", "Feb-26", "Mar-25", "MoM", "YoY"],
 )
+enrollment_by_program["Program"] = canon_program(enrollment_by_program["Program"])
 
 financial_progress = pd.DataFrame(
     [
@@ -259,6 +281,7 @@ drops_by_program = pd.DataFrame(
     ],
     columns=["Program", "Mar-26", "Feb-26", "MoM"],
 )
+drops_by_program["Program"] = canon_program(drops_by_program["Program"])
 
 drop_list_detail = pd.DataFrame(
     [
@@ -281,6 +304,7 @@ drop_list_detail = pd.DataFrame(
     ],
     columns=["#", "Name", "Drop date", "Days in class", "Reason", "Notes", "Program"],
 )
+drop_list_detail["Program"] = canon_program(drop_list_detail["Program"])
 
 drop_reasons = pd.DataFrame(
     [
@@ -312,11 +336,6 @@ fake_attendance = pd.DataFrame(
 # Ordered categorical so the line chart plots Wk 1..Wk 6 in sequence, not alphabetically.
 fake_attendance["week"] = pd.Categorical(fake_attendance["week"], categories=fake_attendance["week"], ordered=True)
 
-# ---- Derived KPIs (same math as the JSX) ----
-total_enrolled = int(utilization_by_program["Enrollment"].sum())
-total_capacity = int(utilization_by_program["Capacity"].sum())
-avg_util = round(total_enrolled / total_capacity * 100)
-total_waitlist = int(utilization_by_program["Waitlist"].sum())
 latest_active = int(weekly_active.iloc[-1]["active"])
 prev_active = int(weekly_active.iloc[-2]["active"])
 latest_week = weekly_new_drops.iloc[-1]
@@ -338,6 +357,39 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ============================================================
+# GLOBAL CLASS TYPE FILTER
+# ============================================================
+ALL_CLASS_TYPES = "All Class Types"
+class_type_options = [ALL_CLASS_TYPES] + sorted(set(CANONICAL_PROGRAMS.values()))
+selected_class_type = st.selectbox("Filter dashboard by Class Type", class_type_options)
+is_filtered = selected_class_type != ALL_CLASS_TYPES
+
+if is_filtered:
+    st.caption(
+        f"Showing **{selected_class_type}** only, wherever the underlying data is broken out by program: "
+        "Utilization, Underfilled classes, Enrollment by Program, Drops by Program, and the drop list. "
+        "The weekly active-enrollment tracker, revenue/EBITDA, drop reasons, funnel, and attendance sections "
+        "aren't broken out by program in the source data, so those keep showing all-program totals."
+    )
+
+
+def filter_by_program(df, col):
+    return df[df[col] == selected_class_type] if is_filtered else df
+
+
+filtered_utilization = filter_by_program(utilization_by_program, "Category")
+filtered_underfilled = filter_by_program(underfilled, "Program")
+filtered_enrollment_by_program = filter_by_program(enrollment_by_program, "Program")
+filtered_drops_by_program = filter_by_program(drops_by_program, "Program")
+filtered_drop_list_detail = filter_by_program(drop_list_detail, "Program")
+
+# ---- Derived KPIs (same math as the JSX, recomputed from the filtered utilization data) ----
+total_enrolled = int(filtered_utilization["Enrollment"].sum())
+total_capacity = int(filtered_utilization["Capacity"].sum())
+avg_util = round(total_enrolled / total_capacity * 100) if total_capacity else 0
+total_waitlist = int(filtered_utilization["Waitlist"].sum())
 
 tab_enrollment, tab_retention, tab_funnel, tab_utilization, tab_billing, tab_attendance = st.tabs(
     ["\U0001F465 Enrollment", "\U0001F4C8 Retention / churn", "\U0001F4CB Lead funnel",
@@ -377,7 +429,7 @@ with tab_enrollment:
     with st.expander("Table: Enrollment Progress — Mar-26 vs Mar-25, verbatim from the monthly pack"):
         plain_table(enrollment_progress)
     with st.expander("Table: Enrollment by Program — current vs. prior month vs. prior year, all 11 programs"):
-        plain_table(enrollment_by_program)
+        plain_table(filtered_enrollment_by_program)
 
 # ============================================================
 # RETENTION TAB
@@ -385,9 +437,9 @@ with tab_enrollment:
 with tab_retention:
     section_title("\U0001F4C8", "Retention / churn", "Computed from real drop counts, using a placeholder definition", "proxy")
     kpi_row([
-        {"label": "MONTHLY CHURN (PROXY)", "value": "2.3%", "sub": "14 drops ÷ 603 active, Mar-26"},
-        {"label": "WEEKLY CHURN (PROXY)", "value": "0.5%", "sub": "3 drops ÷ 628 active"},
-        {"label": "MARCH DROPS", "value": "16", "sub": "Previously-active students"},
+        {"label": "MONTHLY CHURN (PROXY)", "value": "2.3%", "sub": "14 drops ÷ 603 active, Mar-26 (all programs)"},
+        {"label": "WEEKLY CHURN (PROXY)", "value": "0.5%", "sub": "3 drops ÷ 628 active (all programs)"},
+        {"label": "MARCH DROPS", "value": len(filtered_drop_list_detail), "sub": "Previously-active students"},
     ])
 
     with st.container(border=True):
@@ -408,9 +460,9 @@ with tab_retention:
     )
 
     with st.expander("Table: Drops by Program — Mar-26 vs Feb-26, verbatim from the monthly pack"):
-        plain_table(drops_by_program)
+        plain_table(filtered_drops_by_program)
     with st.expander("Table: March drop list detail — all 16 drops, with notes, verbatim from the pack", expanded=True):
-        data_table(drop_list_detail, filter_col="Program")
+        data_table(filtered_drop_list_detail)
 
 # ============================================================
 # FUNNEL TAB
@@ -425,7 +477,7 @@ with tab_funnel:
     with col2:
         kpi_row([
             {"label": "TRIAL → ENROLL CONVERSION", "value": "62%", "sub": "Illustrative"},
-            {"label": "WAITLIST", "value": total_waitlist, "sub": "Real — total GAC waitlist across programs"},
+            {"label": "WAITLIST", "value": total_waitlist, "sub": f"Real — {selected_class_type if is_filtered else 'total GAC'} waitlist"},
         ])
 
     callout(
@@ -445,31 +497,32 @@ with tab_utilization:
     section_title("\U0001F4C5", "Capacity / utilization", "Source: utilization and priority-classes export, as of Apr 27, 2026", "live")
     kpi_row([
         {"label": "OVERALL UTILIZATION", "value": f"{avg_util}%", "sub": f"{total_enrolled} enrolled / {total_capacity} capacity"},
-        {"label": "TOTAL WAITLIST", "value": total_waitlist, "sub": "Mostly Recreation Gymnastics (22)"},
-        {"label": "UNDERFILLED CLASSES", "value": len(underfilled), "sub": "3+ open spots each"},
+        {"label": "TOTAL WAITLIST", "value": total_waitlist, "sub": "Mostly Recreation Gymnastics (22)" if not is_filtered else f"For {selected_class_type}"},
+        {"label": "UNDERFILLED CLASSES", "value": len(filtered_underfilled), "sub": "3+ open spots each"},
     ])
 
     with st.container(border=True):
         st.markdown("**Fill rate by program**")
         st.caption(f"Dashed reference line in the original marks the {avg_util}% overall average — not available in Streamlit's native bar chart.")
-        st.bar_chart(utilization_by_program.set_index("Category")["Utilization"], color=ACCENT, horizontal=True, sort=False)
+        st.bar_chart(filtered_utilization.set_index("Category")["Utilization"], color=ACCENT, horizontal=True, sort=False)
 
-    callout(
-        "Recreation Gymnastics looks only 75% utilized in aggregate, but has 22 families on the waitlist. The "
-        "openings sit in less-popular weekday morning slots (4 &amp; 5 Yr Old classes with 8 open spots each) while "
-        "popular after-school and Saturday slots are full. A GM glancing at the 75% number alone would miss that "
-        "they need more Saturday/afternoon sections, not more enrollment effort overall.",
-        "good",
-    )
+    if not is_filtered:
+        callout(
+            "Recreation Gymnastics looks only 75% utilized in aggregate, but has 22 families on the waitlist. The "
+            "openings sit in less-popular weekday morning slots (4 &amp; 5 Yr Old classes with 8 open spots each) "
+            "while popular after-school and Saturday slots are full. A GM glancing at the 75% number alone would "
+            "miss that they need more Saturday/afternoon sections, not more enrollment effort overall.",
+            "good",
+        )
 
     with st.expander("Table: Underfilled classes — all 19 classes with 3+ open spots", expanded=True):
-        data_table(underfilled, filter_col="Program" if "Program" in underfilled.columns else None, default_sort_col="Open", default_sort_desc=True)
+        data_table(filtered_underfilled, default_sort_col="Open", default_sort_desc=True)
     with st.expander("Table: Utilization by program — all 12 programs, verbatim from the monthly pack"):
         total_row = pd.DataFrame([{
             "Category": "Total", "Enrollment": total_enrolled, "Capacity": total_capacity,
             "Waitlist": total_waitlist, "Utilization": avg_util,
         }])
-        plain_table(pd.concat([utilization_by_program, total_row], ignore_index=True))
+        plain_table(pd.concat([filtered_utilization, total_row], ignore_index=True))
 
 # ============================================================
 # BILLING TAB
